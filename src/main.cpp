@@ -5,19 +5,40 @@
  * MODIFICACIÓN: PID Estándar Completo con Auto-Guardado y Menú en Vivo
  * ========================================================================== */
 
-#include <Arduino.h>
-#include <Wire.h>
-#include <MPU6050_light.h> 
-#include <Adafruit_NeoPixel.h>
-#include <PID_v1.h>
-#include <Preferences.h> // Librería nativa para la memoria flash del ESP32
-#include "RobotStepper.h"
+/*============================================================================
 
+ * DESCRIPCIÓN GENERAL:
+ * Este código implementa un sistema de control para un robot de péndulo invertido
+ * utilizando un ESP32-S3. Se emplea un sensor MPU6050 para medir el ángulo y la
+ * velocidad angular, y se utiliza un algoritmo PID para mantener el equilibrio.
+ * 
+ * CARACTERÍSTICAS PRINCIPALES:
+ * - Control PID con ajuste en tiempo real a través del monitor serie.
+ * - Guardado automático de los parámetros PID en la memoria flash del ESP32.
+ * - Función de recalibración del MPU6050 sin necesidad de reiniciar el sistema.
+ * - Sistema de seguridad que detiene los motores si el ángulo excede los 45 grados.
+ * - Indicadores LED para mostrar el estado del sistema (equilibrio, alerta, etc.).
+ *
+ * NOTAS:
+ * - Asegúrese de no mover el robot durante la calibración del MPU6050.
+ * - Los motores pueden ser habilitados o deshabilitados mediante comandos en el monitor serie.
+ *
+ *============================================================================*/
+
+ // Librerías necesarias para el funcionamiento del sistema
+#include <Arduino.h> // Librería principal de Arduino para ESP32
+#include <Wire.h> // Librería para comunicación I2C
+#include <MPU6050_light.h> // Librería para el sensor MPU6050
+#include <Adafruit_NeoPixel.h> // Librería para control de LEDs NeoPixel
+#include <PID_v1.h> // Librería para control PID
+#include <Preferences.h> // Librería para almacenamiento en memoria flash del ESP32
+#include "RobotStepper.h" // Librería personalizada para control de motores paso a paso
+
+// Definición de pines y parámetros del sistema
 #define I2C_SDA_PIN 1
 #define I2C_SCL_PIN 2
 #define PIN_LED_RGB 48 
 #define NUM_PIXELS 1   
-
 #define DIR_IZQ 6
 #define STEP_IZQ 5
 #define DIR_DER 7
@@ -27,39 +48,39 @@
 #define MS2_PIN 10   
 #define MS1_PIN 11   
 
+// Instancias de los motores paso a paso utilizando la librería RobotStepper
 RobotStepper motorIzq(STEP_IZQ, DIR_IZQ, false);
 RobotStepper motorDer(STEP_DER, DIR_DER, false); 
+float MAX_SPEED = 8000.0; // Velocidad límite en Hz
 
-float MAX_SPEED = 4000.0; // Velocidad límite en Hz
-
+// Instancia del LED interno para indicar el estado del sistema
 Adafruit_NeoPixel led_interno(NUM_PIXELS, PIN_LED_RGB, NEO_GRB + NEO_KHZ800);
+
+// Instancia del sensor MPU6050 para medir ángulo y velocidad angular
 MPU6050 mpu(Wire);
-// Variable para controlar el estado de los motores (True = Encendidos, False = Apagados)
+
+// Variables globales
 bool motoresHabilitados = true;
 float smoothedAngleX = 0;
 float smoothedGyroX = 0;
 float alpha = 0.1; 
-double Setpoint, Input, OutputLibreria, OutputFinal = 0;
-
+double Setpoint, Input, OutputLibreria, OutputFinal = 0; // Variables para el control PID
 unsigned long lastUpdateTime = 0;
 const unsigned long updateInterval = 100; 
-
-// Control de tiempo para el lazo cerrado
 unsigned long lastControlTime = 0;
 const unsigned long controlInterval = 5; // 5ms = 200Hz de muestreo estable
-
-// Valores iniciales por defecto (se usarán si la memoria está vacía)
-double Kp = 40.0; 
-double Ki = 2.0;  
-double Kd = 0.6;  
-// Variable para ajustar la zona muerta fácilmente (en grados)
-float zonaMuerta = 0.7;
+double Kp = 40.0; // Coeficiente proporcional inicial
+double Ki = 2.0;  // Coeficiente integral inicial
+double Kd = 0.6;  // Coeficiente derivativo inicial
+float zonaMuerta = 0.7; //Zona muerta para evitar oscilaciones menores a este ángulo
 
 // Instancia del PID (el parámetro Kd ahora opera internamente en la librería)
 PID myPID(&Input, &OutputLibreria, &Setpoint, Kp, Ki, Kd, DIRECT);
 
 // Instancia para el control de Preferences
 Preferences memoriaPID;
+
+
 // Función para apagar/encender los motores de forma segura
 void alternarMotores() {
     motoresHabilitados = !motoresHabilitados; // Invierte el estado actual
