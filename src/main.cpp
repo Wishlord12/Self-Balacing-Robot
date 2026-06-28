@@ -51,7 +51,7 @@
 // Instancias de los motores paso a paso utilizando la librería RobotStepper
 RobotStepper motorIzq(STEP_IZQ, DIR_IZQ, false);
 RobotStepper motorDer(STEP_DER, DIR_DER, false); 
-float MAX_SPEED = 8000.0; // Velocidad límite en Hz
+float MAX_SPEED = 26000.0; // Velocidad límite en Hz
 
 // Instancia del LED interno para indicar el estado del sistema
 Adafruit_NeoPixel led_interno(NUM_PIXELS, PIN_LED_RGB, NEO_GRB + NEO_KHZ800);
@@ -72,7 +72,7 @@ const unsigned long controlInterval = 5; // 5ms = 200Hz de muestreo estable
 double Kp = 40.0; // Coeficiente proporcional inicial
 double Ki = 2.0;  // Coeficiente integral inicial
 double Kd = 0.6;  // Coeficiente derivativo inicial
-float zonaMuerta = 0.7; //Zona muerta para evitar oscilaciones menores a este ángulo
+float zonaMuerta = 0.; //Zona muerta para evitar oscilaciones menores a este ángulo
 
 // Instancia del PID (el parámetro Kd ahora opera internamente en la librería)
 PID myPID(&Input, &OutputLibreria, &Setpoint, Kp, Ki, Kd, DIRECT);
@@ -150,7 +150,6 @@ void recalibrarMPU() {
 void setup() {
     setCpuFrequencyMhz(240); 
     Serial.begin(460800); 
-    while (!Serial) { delay(10); } // Candado de monitor serial
     pinMode(EN_PIN, OUTPUT);
     digitalWrite(EN_PIN, LOW); 
     pinMode(MS1_PIN, OUTPUT);
@@ -159,8 +158,8 @@ void setup() {
 
     // Configuración física fija a 1/4 de paso
     digitalWrite(MS1_PIN, HIGH); 
-    digitalWrite(MS2_PIN, HIGH); 
-    digitalWrite(MS3_PIN, LOW); 
+    digitalWrite(MS2_PIN, LOW); 
+    digitalWrite(MS3_PIN, HIGH); 
 
     motorIzq.begin();
     motorDer.begin();
@@ -195,10 +194,10 @@ void setup() {
     }
 
     Serial.println("Calibrando sensor... ¡NO MOVER!");
-    delay(1000);
+    delay(5000);
     mpu.calcOffsets(true, true); 
-
-    Setpoint = 0; 
+    mpu.update();
+    Setpoint = 28.2; //Hay que buscar un 28.2 de offset para que el robot quede en equilibrio
     myPID.SetTunings(Kp, Ki, Kd); // Asegura aplicar las constantes leídas
     myPID.SetMode(AUTOMATIC);
     myPID.SetSampleTime(controlInterval); 
@@ -291,7 +290,8 @@ void loop() {
         Serial.print(",Kp:"); Serial.print(Kp);
         Serial.print(",Ki:"); Serial.print(Ki);
         Serial.print(",Kd:"); Serial.print(Kd);
-        Serial.print(",Hz_PID:"); Serial.println(OutputFinal);
+        Serial.print(",Hz_PID:"); Serial.print(OutputFinal);
+        Serial.print(",Setpoint:"); Serial.println(Setpoint);
     }
 
     // ======================================================================
