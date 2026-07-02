@@ -46,7 +46,8 @@
 #define EN_PIN 17
 #define MS3_PIN 3
 #define MS2_PIN 10   
-#define MS1_PIN 11   
+#define MS1_PIN 11      
+
 
 // Instancias de los motores paso a paso utilizando la librería RobotStepper
 RobotStepper motorIzq(STEP_IZQ, DIR_IZQ, false);
@@ -80,6 +81,16 @@ PID myPID(&Input, &OutputLibreria, &Setpoint, Kp, Ki, Kd, DIRECT);
 // Instancia para el control de Preferences
 Preferences memoriaPID;
 
+// Función para inicializar el sistema y configurar los parámetros iniciales
+// Pines y variables del sensor IR
+const int pinSensorIR = 4; // Pin digital conectado al sensor IR
+volatile bool senalDetectada = false;
+volatile unsigned long ultimoPulsoTiempo = 0;
+const unsigned long tiempoEspera = 100; // Tolerancia de pérdida de señal
+
+// Variables para la modificación del ángulo
+const float SETPOINT_BASE = 28.5; 
+float offsetMovimiento = 0.0;
 
 // Función para apagar/encender los motores de forma segura
 void alternarMotores() {
@@ -147,6 +158,12 @@ void recalibrarMPU() {
     Serial.println("=================================================\n");
 }
 
+//Funcion de interrupción para el sensor IR
+void IRAM_ATTR funcionInterrupcion() {
+  senalDetectada = true;
+  ultimoPulsoTiempo = millis(); 
+}
+
 void setup() {
     setCpuFrequencyMhz(240); 
     Serial.begin(460800); 
@@ -155,6 +172,8 @@ void setup() {
     pinMode(MS1_PIN, OUTPUT);
     pinMode(MS2_PIN, OUTPUT);
     pinMode(MS3_PIN, OUTPUT);
+    pinMode(pinSensorIR, INPUT_PULLUP); // Configura el pin del sensor IR 
+    attachInterrupt(digitalPinToInterrupt(pinSensorIR), funcionInterrupcion, FALLING); // Configura la interrupción para el sensor IR
 
     // Configuración física fija a 1/4 de paso
     digitalWrite(MS1_PIN, HIGH); 
@@ -197,7 +216,7 @@ void setup() {
     delay(5000);
     mpu.calcOffsets(true, true); 
     mpu.update();
-    Setpoint = 28.2; //Hay que buscar un 28.2 de offset para que el robot quede en equilibrio
+    Setpoint = SETPOINT_BASE + offsetMovimiento; //Hay que buscar un 28.2 de offset para que el robot quede en equilibrio
     myPID.SetTunings(Kp, Ki, Kd); // Asegura aplicar las constantes leídas
     myPID.SetMode(AUTOMATIC);
     myPID.SetSampleTime(controlInterval); 
@@ -227,6 +246,23 @@ void loop() {
         smoothedGyroX = alpha * rawGyro + (1 - alpha) * smoothedGyroX;
 
         float valorAbsolutoAngulo = abs(smoothedAngleX);
+        // =========================================================
+        // --->AQUÍ VA LA LÓGICA DE MOVIMIENTO INFRARROJO <---
+        // =========================================================
+        if (senalDetectada) {
+            offsetMovimiento = 0.4; // Inclinación para avanzar
+            
+            if (millis() - ultimoPulsoTiempo > tiempoEspera) {
+                offsetMovimiento = 0.0; 
+                senalDetectada = false; 
+            }
+        }
+
+        // =========================================================
+        // --->AQUÍ SE CALCULA EL SETPOINT Y EL ERROR <---
+        // =========================================================
+        Setpoint = SETPOINT_BASE + offsetMovimiento;
+        float errorAbsoluto = abs(smoothedAngleX - Setpoint);
 
         // ESTRUCTURA DE CONTROL CORREGIDA: If -> Else If -> Else
         if (!motoresHabilitados) {
@@ -237,7 +273,7 @@ void loop() {
             digitalWrite(EN_PIN, HIGH); // APAGAR MOTORES
             if (myPID.GetMode() == AUTOMATIC) myPID.SetMode(MANUAL);
         }
-        else if (valorAbsolutoAngulo > 45.0) {
+        else if (valorAbsolutoAngulo > 65.0) {
             // 1. ESTADO DE EMERGENCIA (Caída libre)
             OutputFinal = 0;
             motorIzq.stop();
