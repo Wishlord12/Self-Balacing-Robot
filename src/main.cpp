@@ -91,6 +91,39 @@ const unsigned long tiempoEspera = 100; // Tolerancia de pérdida de señal
 // Variables para la modificación del ángulo
 const float SETPOINT_BASE = 28.5; 
 float offsetMovimiento = 0.0;
+// Configuracion del control remoto
+#define REMOTEXY_MODE__ESP32CORE_BLE
+#include <BLEDevice.h>
+#include <BLEServer.h>
+#include <BLEUtils.h>
+#include <BLE2902.h>
+#include <RemoteXY.h>
+
+#define REMOTEXY_BLUETOOTH_NAME "Sex"
+#pragma pack(push, 1)
+uint8_t const PROGMEM RemoteXY_CONF_PROGMEM[] =   // 105 bytes V19 
+  { 255,4,0,51,0,98,0,19,0,0,0,115,101,120,0,24,2,106,200,200,
+  84,1,1,5,0,1,36,74,31,31,87,23,16,16,0,2,31,85,112,0,
+  1,35,117,32,32,86,48,17,17,0,2,31,68,111,119,110,0,67,1,10,
+  104,26,45,3,99,11,100,2,26,51,1,5,96,31,31,70,35,16,16,0,
+  2,31,76,101,102,116,0,1,68,97,31,31,105,35,16,16,0,2,31,82,
+  105,103,104,116,0 };
+  
+// Estructura Pelua para las variables de la interfaz
+struct {
+    // variables de entrada (botones)
+  uint8_t up; // =1 si el botón está presionado, si no =0
+  uint8_t down; 
+  uint8_t Left; 
+  uint8_t Right; 
+
+    // variables de salida (texto)
+  char Estado_Envio[51]; // string UTF8 de hasta 50 caracteres
+
+    // otras variables
+  uint8_t connect_flag;  // =1 si está conectado por Bluetooth, si no =0
+} RemoteXY;
+#pragma pack(pop)
 
 // Función para apagar/encender los motores de forma segura
 void alternarMotores() {
@@ -174,6 +207,7 @@ void setup() {
     pinMode(MS3_PIN, OUTPUT);
     pinMode(pinSensorIR, INPUT_PULLUP); // Configura el pin del sensor IR 
     attachInterrupt(digitalPinToInterrupt(pinSensorIR), funcionInterrupcion, FALLING); // Configura la interrupción para el sensor IR
+    RemoteXY_Init();
 
     // Configuración física fija a 1/4 de paso
     digitalWrite(MS1_PIN, HIGH); 
@@ -211,7 +245,7 @@ void setup() {
         Serial.println("¡ERROR! MPU6050 no encontrado.");
         while (1); 
     }
-
+ 
     Serial.println("Calibrando sensor... ¡NO MOVER!");
     delay(5000);
     mpu.calcOffsets(true, true); 
@@ -237,6 +271,7 @@ void loop() {
     // ======================================================================
     if (currentMillis - lastControlTime >= controlInterval) {
         lastControlTime = currentMillis;
+        RemoteXY_Handler();
 
         mpu.update();
         float rawAngle = mpu.getAngleX();
@@ -247,15 +282,26 @@ void loop() {
 
         float valorAbsolutoAngulo = abs(smoothedAngleX);
         // =========================================================
-        // --->AQUÍ VA LA LÓGICA DE MOVIMIENTO INFRARROJO <---
+        // --->LÓGICA PELUA DE MOVIMIENTO INFRARROJO/REMOTEXY <---
         // =========================================================
-        if (senalDetectada) {
-            offsetMovimiento = 0.4; // Inclinación para avanzar
+       if (RemoteXY.up == 1) {
+            offsetMovimiento = 0.4;  // Inclinación para avanzar hacia adelante
+        } 
+        else if (RemoteXY.down == 1) {
+            offsetMovimiento = -0.4; // Inclinación inversa para retroceder hacia atrás
+        } 
+        // Sensor Infrarrojo 
+        else if (senalDetectada) {
+            offsetMovimiento = 0.4; 
             
             if (millis() - ultimoPulsoTiempo > tiempoEspera) {
                 offsetMovimiento = 0.0; 
                 senalDetectada = false; 
             }
+        } 
+        // Reposo: Si no se presiona nada, el robot se queda seco
+        else {
+            offsetMovimiento = 0.0;
         }
 
         // =========================================================
@@ -263,6 +309,7 @@ void loop() {
         // =========================================================
         Setpoint = SETPOINT_BASE + offsetMovimiento;
         float errorAbsoluto = abs(smoothedAngleX - Setpoint);
+        snprintf(RemoteXY.Estado_Envio, sizeof(RemoteXY.Estado_Envio), "Setpoint: %.2f", Setpoint);
 
         // ESTRUCTURA DE CONTROL CORREGIDA: If -> Else If -> Else
         if (!motoresHabilitados) {
