@@ -98,6 +98,39 @@ bool enFaseDeAvance = true;
 const unsigned long TIEMPO_AVANCE = 600; // ms que se inclina
 const unsigned long TIEMPO_FRENO = 400;  // ms que se endereza para recuperar
 
+// Configuracion del control remoto
+#define REMOTEXY_MODE__ESP32CORE_BLE
+#include <BLEDevice.h>
+#include <BLEServer.h>
+#include <BLEUtils.h>
+#include <BLE2902.h>
+#include <RemoteXY.h>
+
+#define REMOTEXY_BLUETOOTH_NAME "Sex"
+#pragma pack(push, 1)
+uint8_t const PROGMEM RemoteXY_CONF_PROGMEM[] =   // 105 bytes V19 
+  { 255,4,0,51,0,98,0,19,0,0,0,115,101,120,0,24,2,106,200,200,
+  84,1,1,5,0,1,36,74,31,31,87,23,16,16,0,2,31,85,112,0,
+  1,35,117,32,32,86,48,17,17,0,2,31,68,111,119,110,0,67,1,10,
+  104,26,45,3,99,11,100,2,26,51,1,5,96,31,31,70,35,16,16,0,
+  2,31,76,101,102,116,0,1,68,97,31,31,105,35,16,16,0,2,31,82,
+  105,103,104,116,0 };
+  
+// Estructura Pelua para las variables de la interfaz
+struct {
+    // variables de entrada (botones)
+  uint8_t up; // =1 si el botón está presionado, si no =0
+  uint8_t down; 
+  uint8_t Left; 
+  uint8_t Right; 
+
+    // variables de salida (texto)
+  char Estado_Envio[51]; // string UTF8 de hasta 50 caracteres
+
+    // otras variables
+  uint8_t connect_flag;  // =1 si está conectado por Bluetooth, si no =0
+} RemoteXY;
+#pragma pack(pop)
 
 // Función para apagar/encender los motores de forma segura
 void alternarMotores() {
@@ -181,6 +214,7 @@ void setup() {
     pinMode(MS3_PIN, OUTPUT);
     pinMode(pinSensorIR, INPUT_PULLUP); // Configura el pin del sensor IR 
     attachInterrupt(digitalPinToInterrupt(pinSensorIR), funcionInterrupcion, FALLING); // Configura la interrupción para el sensor IR
+    RemoteXY_Init();
 
     // Configuración física fija a 1/4 de paso
     digitalWrite(MS1_PIN, HIGH); 
@@ -218,7 +252,7 @@ void setup() {
         Serial.println("¡ERROR! MPU6050 no encontrado.");
         while (1); 
     }
-
+ 
     Serial.println("Calibrando sensor... ¡NO MOVER!");
     delay(5000);
     mpu.calcOffsets(true, true); 
@@ -239,11 +273,12 @@ void loop() {
 
     unsigned long currentMillis = millis();
 
-   // ======================================================================
+// ======================================================================
     // LAZO DE CONTROL CONTROLADO (Cada 5 milisegundos)
     // ======================================================================
     if (currentMillis - lastControlTime >= controlInterval) {
         lastControlTime = currentMillis;
+        RemoteXY_Handler();
 
         mpu.update();
         float rawAngle = mpu.getAngleX();
@@ -253,16 +288,43 @@ void loop() {
         smoothedGyroX = alpha * rawGyro + (1 - alpha) * smoothedGyroX;
 
         float valorAbsolutoAngulo = abs(smoothedAngleX);
+
         // =========================================================
-        // ---> 2. LÓGICA DE MOVIMIENTO POR PULSOS              <---
+        // ---> 2. LÓGICA DE MOVIMIENTO INFRARROJO / REMOTEXY <---
         // =========================================================
-        if (senalDetectada && (millis() - ultimoPulsoTiempo <= tiempoEspera)) {
-            // Hay señal: Ejecutamos ciclo de zancadas
+        bool senalActiva = false;
+        float direccion = 0.0;
+
+        // Evaluamos si hay alguna orden de movimiento
+        if (RemoteXY.up == 1) {
+            senalActiva = true;
+            direccion = MAX_OFFSET; // Avanzar (0.35)
+        } 
+        else if (RemoteXY.down == 1) {
+            senalActiva = true;
+            direccion = -MAX_OFFSET; // Retroceder (-0.35)
+        } 
+        else if (senalDetectada) {
+            senalActiva = true;
+            direccion = MAX_OFFSET; // El sensor IR también hace avanzar
+            
+            // Si se pierde la señal IR por más del tiempo de espera
+            if (millis() - ultimoPulsoTiempo > tiempoEspera) {
+                senalDetectada = false; 
+                senalActiva = false;
+            }
+        }
+
+        // =========================================================
+        // ---> APLICACIÓN DE LOS PULSOS PARA NO CAERSE <---
+        // =========================================================
+        if (senalActiva) {
+            // ¡Variable faltante declarada aquí!
             unsigned long tiempoTranscurrido = millis() - tiempoFaseMovimiento;
 
             if (enFaseDeAvance) {
-                // FASE 1: Inclinación directa para avanzar
-                offsetMovimiento = MAX_OFFSET; 
+                // FASE 1: Se inclina en la dirección solicitada (Adelante o Atrás)
+                offsetMovimiento = direccion; 
                 
                 if (tiempoTranscurrido >= TIEMPO_AVANCE) {
                     enFaseDeAvance = false;
@@ -270,7 +332,7 @@ void loop() {
                 }
             } 
             else {
-                // FASE 2: Volver al centro directo para recuperar
+                // FASE 2: Vuelve al centro directo para recuperar equilibrio
                 offsetMovimiento = 0.0; 
                 
                 if (tiempoTranscurrido >= TIEMPO_FRENO) {
@@ -280,16 +342,18 @@ void loop() {
             }
         } 
         else {
-            // No hay señal: Reposo total inmediato
+            // No hay señal de la app ni del sensor: Reposo total inmediato
             offsetMovimiento = 0.0;
             enFaseDeAvance = true; // Prepara para que el próximo pulso empiece avanzando
             tiempoFaseMovimiento = millis();
         }
+
         // =========================================================
-        // --->AQUÍ SE CALCULA EL SETPOINT Y EL ERROR <---
+        // ---> AQUÍ SE CALCULA EL SETPOINT Y EL ERROR <---
         // =========================================================
         Setpoint = SETPOINT_BASE + offsetMovimiento;
         float errorAbsoluto = abs(smoothedAngleX - Setpoint);
+        snprintf(RemoteXY.Estado_Envio, sizeof(RemoteXY.Estado_Envio), "Setpoint: %.2f", Setpoint);
 
         // ESTRUCTURA DE CONTROL CORREGIDA: If -> Else If -> Else
         if (!motoresHabilitados) {
@@ -305,21 +369,20 @@ void loop() {
             OutputFinal = 0;
             motorIzq.stop();
             motorDer.stop();
-            digitalWrite(EN_PIN, HIGH); // APAGAR MOTORES (Libera el torque por seguridad)
-            myPID.SetMode(MANUAL);      // Pausar PID para que no acumule basura
+            digitalWrite(EN_PIN, HIGH); 
+            myPID.SetMode(MANUAL);      
         } 
         else if (valorAbsolutoAngulo <= zonaMuerta) {
             // 2. ZONA MUERTA (Equilibrio perfecto)
             OutputFinal = 0;
             motorIzq.stop();
             motorDer.stop();
-            digitalWrite(EN_PIN, HIGH);  // MANTENER ENCENDIDO (Torque de retención activo)
-            // Opcional: podrías poner myPID.SetMode(MANUAL) aquí si notas que el Ki acumula error
+            digitalWrite(EN_PIN, HIGH);  
         } 
         else {
             // 3. ESTADO DE BALANCEO ACTIVO
-            if (myPID.GetMode() == MANUAL) myPID.SetMode(AUTOMATIC); // Reactivar PID si estaba pausado
-            digitalWrite(EN_PIN, LOW);  // Asegurar que los motores tienen fuerza
+            if (myPID.GetMode() == MANUAL) myPID.SetMode(AUTOMATIC); 
+            digitalWrite(EN_PIN, LOW);  
             
             Input = (double)smoothedAngleX;
             myPID.Compute(); 
@@ -331,7 +394,6 @@ void loop() {
             motorDer.setSpeedHz(OutputFinal);
         }
     }
-
     // ======================================================================
     // TELEMETRÍA (Cada 100 milisegundos)
     // ======================================================================
