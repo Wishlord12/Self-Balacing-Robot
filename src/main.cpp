@@ -83,14 +83,21 @@ Preferences memoriaPID;
 
 // Función para inicializar el sistema y configurar los parámetros iniciales
 // Pines y variables del sensor IR
-const int pinSensorIR = 4; // Pin digital conectado al sensor IR
+const int pinSensorIR = 4;  
 volatile bool senalDetectada = false;
 volatile unsigned long ultimoPulsoTiempo = 0;
 const unsigned long tiempoEspera = 100; // Tolerancia de pérdida de señal
 
-// Variables para la modificación del ángulo
-const float SETPOINT_BASE = 28.5; 
-float offsetMovimiento = 0.0;
+const float SETPOINT_BASE = 28.33; 
+float offsetMovimiento = 0.0;     // Modificador directo del ángulo
+const float MAX_OFFSET = 0.35;     // Grados de inclinación para avanzar
+
+// Variables para el movimiento por pulsos ("Caminar y Frenar")
+unsigned long tiempoFaseMovimiento = 0;
+bool enFaseDeAvance = true;
+const unsigned long TIEMPO_AVANCE = 600; // ms que se inclina
+const unsigned long TIEMPO_FRENO = 400;  // ms que se endereza para recuperar
+
 
 // Función para apagar/encender los motores de forma segura
 void alternarMotores() {
@@ -247,17 +254,37 @@ void loop() {
 
         float valorAbsolutoAngulo = abs(smoothedAngleX);
         // =========================================================
-        // --->AQUÍ VA LA LÓGICA DE MOVIMIENTO INFRARROJO <---
+        // ---> 2. LÓGICA DE MOVIMIENTO POR PULSOS              <---
         // =========================================================
-        if (senalDetectada) {
-            offsetMovimiento = 0.4; // Inclinación para avanzar
-            
-            if (millis() - ultimoPulsoTiempo > tiempoEspera) {
-                offsetMovimiento = 0.0; 
-                senalDetectada = false; 
-            }
-        }
+        if (senalDetectada && (millis() - ultimoPulsoTiempo <= tiempoEspera)) {
+            // Hay señal: Ejecutamos ciclo de zancadas
+            unsigned long tiempoTranscurrido = millis() - tiempoFaseMovimiento;
 
+            if (enFaseDeAvance) {
+                // FASE 1: Inclinación directa para avanzar
+                offsetMovimiento = MAX_OFFSET; 
+                
+                if (tiempoTranscurrido >= TIEMPO_AVANCE) {
+                    enFaseDeAvance = false;
+                    tiempoFaseMovimiento = millis(); // Cambia a frenar
+                }
+            } 
+            else {
+                // FASE 2: Volver al centro directo para recuperar
+                offsetMovimiento = 0.0; 
+                
+                if (tiempoTranscurrido >= TIEMPO_FRENO) {
+                    enFaseDeAvance = true;
+                    tiempoFaseMovimiento = millis(); // Cambia a avanzar
+                }
+            }
+        } 
+        else {
+            // No hay señal: Reposo total inmediato
+            offsetMovimiento = 0.0;
+            enFaseDeAvance = true; // Prepara para que el próximo pulso empiece avanzando
+            tiempoFaseMovimiento = millis();
+        }
         // =========================================================
         // --->AQUÍ SE CALCULA EL SETPOINT Y EL ERROR <---
         // =========================================================
