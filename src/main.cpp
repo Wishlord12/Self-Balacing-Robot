@@ -33,6 +33,7 @@
 #include <PID_v1.h> // Librería para control PID
 #include <Preferences.h> // Librería para almacenamiento en memoria flash del ESP32
 #include "RobotStepper.h" // Librería personalizada para control de motores paso a paso
+#include <Fuzzy.h> // Librería para control difuso (Fuzzy Logic) - Opcional
 
 // Definición de pines y parámetros del sistema
 #define I2C_SDA_PIN 1
@@ -74,10 +75,11 @@ double Kp = 40.0; // Coeficiente proporcional inicial
 double Ki = 2.0;  // Coeficiente integral inicial
 double Kd = 0.6;  // Coeficiente derivativo inicial
 float zonaMuerta = 0.; //Zona muerta para evitar oscilaciones menores a este ángulo
+const float RAMP_RATE = 0.01; // grados que cambia el offset por ciclo (5ms) -> empieza bajo y sube si querés más aceleración
 
 // Instancia del PID (el parámetro Kd ahora opera internamente en la librería)
 PID myPID(&Input, &OutputLibreria, &Setpoint, Kp, Ki, Kd, DIRECT);
-
+double kd_gyro = 15.0; //punto de partida = tu Kd actual, luego se resintoniza 
 // Instancia para el control de Preferences
 Preferences memoriaPID;
 
@@ -90,12 +92,12 @@ const unsigned long tiempoEspera = 100; // Tolerancia de pérdida de señal
 
 const float SETPOINT_BASE = 28.33; 
 float offsetMovimiento = 0.0;     // Modificador directo del ángulo
-const float MAX_OFFSET = 0.35;     // Grados de inclinación para avanzar
+const float MAX_OFFSET = 0.6;     // Grados de inclinación para avanzar
 
 // Variables para el movimiento por pulsos ("Caminar y Frenar")
 unsigned long tiempoFaseMovimiento = 0;
 bool enFaseDeAvance = true;
-const unsigned long TIEMPO_AVANCE = 600; // ms que se inclina
+const unsigned long TIEMPO_AVANCE = 1000; // ms que se inclina
 const unsigned long TIEMPO_FRENO = 400;  // ms que se endereza para recuperar
 
 // Configuracion del control remoto
@@ -106,7 +108,7 @@ const unsigned long TIEMPO_FRENO = 400;  // ms que se endereza para recuperar
 #include <BLE2902.h>
 #include <RemoteXY.h>
 
-#define REMOTEXY_BLUETOOTH_NAME "Sex"
+#define REMOTEXY_BLUETOOTH_NAME "Control Robot" // Nombre del dispositivo Bluetooth
 #pragma pack(push, 1)
 uint8_t const PROGMEM RemoteXY_CONF_PROGMEM[] =   // 105 bytes V19 
   { 255,4,0,51,0,98,0,19,0,0,0,115,101,120,0,24,2,106,200,200,
@@ -387,7 +389,7 @@ void loop() {
             Input = (double)smoothedAngleX;
             myPID.Compute(); 
             
-            OutputFinal = OutputLibreria;
+            OutputFinal = OutputLibreria - kd_gyro * smoothedGyroX; // el signo se ajusta probando;
             OutputFinal = constrain(OutputFinal, -MAX_SPEED, MAX_SPEED);
             
             motorIzq.setSpeedHz(-OutputFinal);
@@ -400,13 +402,13 @@ void loop() {
     if (currentMillis - lastUpdateTime >= updateInterval) {
         lastUpdateTime = currentMillis;
         
-        float valorAbsolutoAngulo = abs(smoothedAngleX);
-        if (valorAbsolutoAngulo > 30) {
-            led_interno.setPixelColor(0, led_interno.Color(200, 0, 0)); 
-        } else if (valorAbsolutoAngulo <= 1) {
-            led_interno.setPixelColor(0, led_interno.Color(0, 200, 0)); 
+        float errorAbsoluto = abs(smoothedAngleX - Setpoint);
+        if (errorAbsoluto > 15.0) {
+            led_interno.setPixelColor(0, led_interno.Color(200, 0, 0)); // Rojo
+        } else if (errorAbsoluto <= 2.0) {
+            led_interno.setPixelColor(0, led_interno.Color(0, 200, 0)); // Verde
         } else {
-            led_interno.setPixelColor(0, led_interno.Color(255, 255, 0)); 
+            led_interno.setPixelColor(0, led_interno.Color(255, 255, 0)); // Amarillo
         }
         led_interno.show();
         
