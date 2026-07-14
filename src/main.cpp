@@ -33,6 +33,7 @@
 #include <PID_v1.h> // Librería para control PID
 #include <Preferences.h> // Librería para almacenamiento en memoria flash del ESP32
 #include "RobotStepper.h" // Librería personalizada para control de motores paso a paso
+#include <Fuzzy.h> // Librería para control difuso (Fuzzy Logic) - Opcional
 
 // Definición de pines y parámetros del sistema
 #define I2C_SDA_PIN 1
@@ -74,23 +75,31 @@ double Kp = 40.0; // Coeficiente proporcional inicial
 double Ki = 2.0;  // Coeficiente integral inicial
 double Kd = 0.6;  // Coeficiente derivativo inicial
 float zonaMuerta = 0.; //Zona muerta para evitar oscilaciones menores a este ángulo
+const float RAMP_RATE = 0.01; // grados que cambia el offset por ciclo (5ms) -> empieza bajo y sube si querés más aceleración
 
 // Instancia del PID (el parámetro Kd ahora opera internamente en la librería)
 PID myPID(&Input, &OutputLibreria, &Setpoint, Kp, Ki, Kd, DIRECT);
-
+double kd_gyro = 15.0; //punto de partida = tu Kd actual, luego se resintoniza 
 // Instancia para el control de Preferences
 Preferences memoriaPID;
 
 // Función para inicializar el sistema y configurar los parámetros iniciales
 // Pines y variables del sensor IR
-const int pinSensorIR = 4; // Pin digital conectado al sensor IR
+const int pinSensorIR = 4;  
 volatile bool senalDetectada = false;
 volatile unsigned long ultimoPulsoTiempo = 0;
 const unsigned long tiempoEspera = 100; // Tolerancia de pérdida de señal
 
-// Variables para la modificación del ángulo
-const float SETPOINT_BASE = 28.5; 
-float offsetMovimiento = 0.0;
+const float SETPOINT_BASE = 28.25; 
+float offsetMovimiento = 0.0;     // Modificador directo del ángulo
+const float MAX_OFFSET = 0.35;     // Grados de inclinación para avanzar
+
+// Variables para el movimiento por pulsos ("Caminar y Frenar")
+unsigned long tiempoFaseMovimiento = 0;
+bool enFaseDeAvance = true;
+const unsigned long TIEMPO_AVANCE = 800; // ms que se inclina
+const unsigned long TIEMPO_FRENO = 200;  // ms que se endereza para recuperar
+
 // Configuracion del control remoto
 #define REMOTEXY_MODE__ESP32CORE_BLE
 #include <BLEDevice.h>
@@ -98,7 +107,6 @@ float offsetMovimiento = 0.0;
 #include <BLEUtils.h>
 #include <BLE2902.h>
 #include <RemoteXY.h>
-
 #define REMOTEXY_BLUETOOTH_NAME "Self Balancing Robot"
 #pragma pack(push, 1)
 uint8_t const PROGMEM RemoteXY_CONF_PROGMEM[] =   // 105 bytes V19 
@@ -266,7 +274,7 @@ void loop() {
 
     unsigned long currentMillis = millis();
 
-   // ======================================================================
+// ======================================================================
     // LAZO DE CONTROL CONTROLADO (Cada 5 milisegundos)
     // ======================================================================
     if (currentMillis - lastControlTime >= controlInterval) {
@@ -281,31 +289,68 @@ void loop() {
         smoothedGyroX = alpha * rawGyro + (1 - alpha) * smoothedGyroX;
 
         float valorAbsolutoAngulo = abs(smoothedAngleX);
+
         // =========================================================
-        // --->LÓGICA PELUA DE MOVIMIENTO INFRARROJO/REMOTEXY <---
+        // ---> 2. LÓGICA DE MOVIMIENTO INFRARROJO / REMOTEXY <---
         // =========================================================
-       if (RemoteXY.up == 1) {
-            offsetMovimiento = 0.4;  // Inclinación para avanzar hacia adelante
+        bool senalActiva = false;
+        float direccion = 0.0;
+
+        // Evaluamos si hay alguna orden de movimiento
+        if (RemoteXY.up == 1) {
+            senalActiva = true;
+            direccion = MAX_OFFSET; // Avanzar (0.35)
         } 
         else if (RemoteXY.down == 1) {
-            offsetMovimiento = -0.4; // Inclinación inversa para retroceder hacia atrás
+            senalActiva = true;
+            direccion = -MAX_OFFSET - 0.4; // Retroceder (-0.35)
         } 
-        // Sensor Infrarrojo 
         else if (senalDetectada) {
-            offsetMovimiento = 0.4; 
+            senalActiva = true;
+            direccion = MAX_OFFSET; // El sensor IR también hace avanzar
             
+            // Si se pierde la señal IR por más del tiempo de espera
             if (millis() - ultimoPulsoTiempo > tiempoEspera) {
-                offsetMovimiento = 0.0; 
                 senalDetectada = false; 
+                senalActiva = false;
             }
-        } 
-        // Reposo: Si no se presiona nada, el robot se queda seco
-        else {
-            offsetMovimiento = 0.0;
         }
 
         // =========================================================
-        // --->AQUÍ SE CALCULA EL SETPOINT Y EL ERROR <---
+        // ---> APLICACIÓN DE LOS PULSOS PARA NO CAERSE <---
+        // =========================================================
+        if (senalActiva) {
+            // ¡Variable faltante declarada aquí!
+            unsigned long tiempoTranscurrido = millis() - tiempoFaseMovimiento;
+
+            if (enFaseDeAvance) {
+                // FASE 1: Se inclina en la dirección solicitada (Adelante o Atrás)
+                offsetMovimiento = direccion; 
+                
+                if (tiempoTranscurrido >= TIEMPO_AVANCE) {
+                    enFaseDeAvance = false;
+                    tiempoFaseMovimiento = millis(); // Cambia a frenar
+                }
+            } 
+            else {
+                // FASE 2: Vuelve al centro directo para recuperar equilibrio
+                offsetMovimiento = 0.0; 
+                
+                if (tiempoTranscurrido >= TIEMPO_FRENO) {
+                    enFaseDeAvance = true;
+                    tiempoFaseMovimiento = millis(); // Cambia a avanzar
+                }
+            }
+        } 
+        else {
+            // No hay señal de la app ni del sensor: Reposo total inmediato
+            offsetMovimiento = 0.0;
+            enFaseDeAvance = true; // Prepara para que el próximo pulso empiece avanzando
+            tiempoFaseMovimiento = millis();
+        }
+
+        // =========================================================
+        // ---> AQUÍ SE CALCULA EL SETPOINT Y EL ERROR <---
         // =========================================================
         Setpoint = SETPOINT_BASE + offsetMovimiento;
         float errorAbsoluto = abs(smoothedAngleX - Setpoint);
@@ -325,46 +370,44 @@ void loop() {
             OutputFinal = 0;
             motorIzq.stop();
             motorDer.stop();
-            digitalWrite(EN_PIN, HIGH); // APAGAR MOTORES (Libera el torque por seguridad)
-            myPID.SetMode(MANUAL);      // Pausar PID para que no acumule basura
+            digitalWrite(EN_PIN, HIGH); 
+            myPID.SetMode(MANUAL);      
         } 
         else if (valorAbsolutoAngulo <= zonaMuerta) {
             // 2. ZONA MUERTA (Equilibrio perfecto)
             OutputFinal = 0;
             motorIzq.stop();
             motorDer.stop();
-            digitalWrite(EN_PIN, HIGH);  // MANTENER ENCENDIDO (Torque de retención activo)
-            // Opcional: podrías poner myPID.SetMode(MANUAL) aquí si notas que el Ki acumula error
+            digitalWrite(EN_PIN, HIGH);  
         } 
         else {
             // 3. ESTADO DE BALANCEO ACTIVO
-            if (myPID.GetMode() == MANUAL) myPID.SetMode(AUTOMATIC); // Reactivar PID si estaba pausado
-            digitalWrite(EN_PIN, LOW);  // Asegurar que los motores tienen fuerza
+            if (myPID.GetMode() == MANUAL) myPID.SetMode(AUTOMATIC); 
+            digitalWrite(EN_PIN, LOW);  
             
             Input = (double)smoothedAngleX;
             myPID.Compute(); 
             
-            OutputFinal = OutputLibreria;
+            OutputFinal = OutputLibreria - kd_gyro * smoothedGyroX; // el signo se ajusta probando;
             OutputFinal = constrain(OutputFinal, -MAX_SPEED, MAX_SPEED);
             
             motorIzq.setSpeedHz(-OutputFinal);
             motorDer.setSpeedHz(OutputFinal);
         }
     }
-
     // ======================================================================
     // TELEMETRÍA (Cada 100 milisegundos)
     // ======================================================================
     if (currentMillis - lastUpdateTime >= updateInterval) {
         lastUpdateTime = currentMillis;
         
-        float valorAbsolutoAngulo = abs(smoothedAngleX);
-        if (valorAbsolutoAngulo > 30) {
-            led_interno.setPixelColor(0, led_interno.Color(200, 0, 0)); 
-        } else if (valorAbsolutoAngulo <= 1) {
-            led_interno.setPixelColor(0, led_interno.Color(0, 200, 0)); 
+        float errorAbsoluto = abs(smoothedAngleX - Setpoint);
+        if (errorAbsoluto > 15.0) {
+            led_interno.setPixelColor(0, led_interno.Color(200, 0, 0)); // Rojo
+        } else if (errorAbsoluto <= 2.0) {
+            led_interno.setPixelColor(0, led_interno.Color(0, 200, 0)); // Verde
         } else {
-            led_interno.setPixelColor(0, led_interno.Color(255, 255, 0)); 
+            led_interno.setPixelColor(0, led_interno.Color(255, 255, 0)); // Amarillo
         }
         led_interno.show();
         
