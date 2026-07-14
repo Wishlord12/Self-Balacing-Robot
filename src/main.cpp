@@ -90,15 +90,15 @@ volatile bool senalDetectada = false;
 volatile unsigned long ultimoPulsoTiempo = 0;
 const unsigned long tiempoEspera = 100; // Tolerancia de pérdida de señal
 
-const float SETPOINT_BASE = 28.33; 
+const float SETPOINT_BASE = 28.25; 
 float offsetMovimiento = 0.0;     // Modificador directo del ángulo
-const float MAX_OFFSET = 0.6;     // Grados de inclinación para avanzar
+const float MAX_OFFSET = 0.35;     // Grados de inclinación para avanzar
 
 // Variables para el movimiento por pulsos ("Caminar y Frenar")
 unsigned long tiempoFaseMovimiento = 0;
 bool enFaseDeAvance = true;
-const unsigned long TIEMPO_AVANCE = 1000; // ms que se inclina
-const unsigned long TIEMPO_FRENO = 400;  // ms que se endereza para recuperar
+const unsigned long TIEMPO_AVANCE = 800; // ms que se inclina
+const unsigned long TIEMPO_FRENO = 200;  // ms que se endereza para recuperar
 
 // Configuracion del control remoto
 #define REMOTEXY_MODE__ESP32CORE_BLE
@@ -304,7 +304,7 @@ void loop() {
         } 
         else if (RemoteXY.down == 1) {
             senalActiva = true;
-            direccion = -MAX_OFFSET; // Retroceder (-0.35)
+            direccion = -MAX_OFFSET - 0.4; // Retroceder (-0.35)
         } 
         else if (senalDetectada) {
             senalActiva = true;
