@@ -99,7 +99,7 @@ float offsetMovimiento = 0.0;
 #include <BLE2902.h>
 #include <RemoteXY.h>
 
-#define REMOTEXY_BLUETOOTH_NAME "Sex"
+#define REMOTEXY_BLUETOOTH_NAME "Self Balancing Robot"
 #pragma pack(push, 1)
 uint8_t const PROGMEM RemoteXY_CONF_PROGMEM[] =   // 105 bytes V19 
   { 255,4,0,51,0,98,0,19,0,0,0,115,101,120,0,24,2,106,200,200,
